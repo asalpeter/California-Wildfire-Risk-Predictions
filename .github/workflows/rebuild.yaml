@@ -1,4 +1,4 @@
-name: 🔁 Rebuild Daily Wildfire Predictions
+name: Rebuild Daily Wildfire Predictions
 
 on:
   workflow_dispatch:
