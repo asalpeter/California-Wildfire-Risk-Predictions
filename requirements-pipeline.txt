@@ -14,3 +14,4 @@ joblib
 certifi
 rtree
 python-dotenv
+pyarrow
