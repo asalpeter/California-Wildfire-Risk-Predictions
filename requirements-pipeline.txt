@@ -1,0 +1,15 @@
+numpy
+pandas
+pyyaml
+xarray
+netCDF4
+h5netcdf
+requests
+shapely
+xgboost
+scikit-learn
+geopandas
+rasterio
+joblib
+certifi
+rtree

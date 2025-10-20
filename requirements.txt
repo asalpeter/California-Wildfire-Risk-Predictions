@@ -1,0 +1,7 @@
+streamlit==1.38.0
+streamlit-folium==0.22.0
+streamlit-autorefresh==1.0.2
+folium==0.17.0
+branca==0.7.2
+shapely==2.0.6
+requests==2.32.3

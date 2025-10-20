@@ -1,0 +1,15 @@
+history:
+  start: "2018-01-01"
+  end:   "2025-10-09"
+
+features:
+  agg_windows_days: [1, 3, 7]
+
+static:
+  topography: true
+  human_proxies: true
+
+human:
+  osm_highway_filter: '["highway"~"motorway|trunk|primary|secondary|tertiary|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link"]'
+  # max edges to fetch per polygon pull; osmnx will tile internally
+  network_type: "drive"
