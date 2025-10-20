@@ -1,0 +1,95 @@
+name: 🔁 Rebuild Daily Wildfire Predictions
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 10 * * *"  # 10:00 UTC daily (~3am PT)
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+
+      - name: Install app deps
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -V
+          pip install --upgrade pip wheel
+          pip install -r requirements-pipeline.txt
+          # app deps not strictly needed here, but harmless if you want to run streamlit in CI:
+          # pip install -r requirements.txt
+
+      - name: Set dynamic dates
+        id: dates
+        run: |
+          echo "END_DATE=$(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          # Optional: set START via repo secret/var or keep config.yaml default
+
+      - name: Prepare secrets
+        env:
+          FIRMS_MAP_KEY: ${{ secrets.FIRMS_MAP_KEY }}
+        run: |
+          if [ -z "$FIRMS_MAP_KEY" ]; then
+            echo "FIRMS_MAP_KEY is missing in repo secrets." >&2
+            exit 1
+          fi
+          # .env is optional; scripts read env directly
+          echo "FIRMS_MAP_KEY=$FIRMS_MAP_KEY" > .env
+
+      # ------- REFRESH RAW DATA (lightweight & idempotent) --------
+      - name: Download latest FIRMS window(s)
+        env:
+          FIRMS_MAP_KEY: ${{ secrets.FIRMS_MAP_KEY }}
+        run: |
+          source .venv/bin/activate
+          python src/data/download_firms.py
+
+      - name: Download/ensure GridMET yearly files
+        env:
+          # Use config START; override END to "today" so the final year is present
+          END: ${{ steps.dates.outputs.END_DATE }}
+        run: |
+          source .venv/bin/activate
+          python src/data/download_gridmet.py
+
+      - name: Build labels (hex × day)
+        run: |
+          source .venv/bin/activate
+          python src/data/make_labels.py
+
+      # ------- FEATURES + TRAIN + PREDICT -------------------------
+      - name: Build features
+        run: |
+          source .venv/bin/activate
+          python src/data/make_features.py
+
+      - name: Train model
+        run: |
+          source .venv/bin/activate
+          python src/data/train.py
+
+      - name: Predict + write GeoJSON
+        run: |
+          source .venv/bin/activate
+          python src/data/predict.py
+
+      - name: Commit and push updated artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "🔄 Auto-update: model retrain & predictions ($(date -u +'%Y-%m-%d'))" || echo "No changes to commit"
+          git push
