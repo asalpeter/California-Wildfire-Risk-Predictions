@@ -3,93 +3,105 @@ name: 🔁 Rebuild Daily Wildfire Predictions
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 10 * * *"  # 10:00 UTC daily (~3am PT)
+    - cron: "0 10 * * *"     # daily at 10:00 UTC (~3am PT)
 
 permissions:
-  contents: write
+  contents: write            # allow push from the bot
+
+concurrency:
+  group: rebuild
+  cancel-in-progress: false
 
 jobs:
   rebuild:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: 'pip'
+          cache: pip
 
-      - name: Install app deps
+      - name: Cache big data folders (GridMET & DEM tiles)
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/raw/gridmet
+            data/raw/dem/tiles
+          key: gridmet-dem-${{ runner.os }}-${{ hashFiles('src/config.yaml') }}
+          restore-keys: |
+            gridmet-dem-${{ runner.os }}-
+
+      - name: Create venv & install pipeline deps
         run: |
           python -m venv .venv
           source .venv/bin/activate
           python -V
           pip install --upgrade pip wheel
           pip install -r requirements-pipeline.txt
-          # app deps not strictly needed here, but harmless if you want to run streamlit in CI:
-          # pip install -r requirements.txt
 
-      - name: Set dynamic dates
-        id: dates
-        run: |
-          echo "END_DATE=$(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
-          # Optional: set START via repo secret/var or keep config.yaml default
-
-      - name: Prepare secrets
+      - name: Ensure required secrets
         env:
           FIRMS_MAP_KEY: ${{ secrets.FIRMS_MAP_KEY }}
         run: |
           if [ -z "$FIRMS_MAP_KEY" ]; then
-            echo "FIRMS_MAP_KEY is missing in repo secrets." >&2
+            echo "FIRMS_MAP_KEY is missing in repo secrets (Settings → Secrets and variables → Actions)." >&2
             exit 1
           fi
-          # .env is optional; scripts read env directly
+          # optional: make .env for scripts that read it
           echo "FIRMS_MAP_KEY=$FIRMS_MAP_KEY" > .env
 
-      # ------- REFRESH RAW DATA (lightweight & idempotent) --------
-      - name: Download latest FIRMS window(s)
+      - name: Compute dynamic dates (END=today UTC)
+        id: dates
+        run: echo "END_DATE=$(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      # ---------- REFRESH RAW DATA (idempotent) ----------
+      - name: Download latest FIRMS detections
         env:
           FIRMS_MAP_KEY: ${{ secrets.FIRMS_MAP_KEY }}
         run: |
           source .venv/bin/activate
           python src/data/download_firms.py
 
-      - name: Download/ensure GridMET yearly files
+      - name: Download/ensure GridMET year files (END=today)
         env:
-          # Use config START; override END to "today" so the final year is present
           END: ${{ steps.dates.outputs.END_DATE }}
         run: |
           source .venv/bin/activate
           python src/data/download_gridmet.py
 
+      # ---------- BUILD LABELS & FEATURES ----------
       - name: Build labels (hex × day)
         run: |
           source .venv/bin/activate
           python src/data/make_labels.py
 
-      # ------- FEATURES + TRAIN + PREDICT -------------------------
-      - name: Build features
+      - name: Build features (weather + VPD + statics + lags)
         run: |
           source .venv/bin/activate
           python src/data/make_features.py
 
+      # ---------- TRAIN & PREDICT ----------
       - name: Train model
         run: |
           source .venv/bin/activate
           python src/data/train.py
 
-      - name: Predict + write GeoJSON
+      - name: Predict & export GeoJSON
         run: |
           source .venv/bin/activate
           python src/data/predict.py
 
+      # ---------- COMMIT ONLY SMALL ARTIFACTS ----------
       - name: Commit and push updated artifacts
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "🔄 Auto-update: model retrain & predictions ($(date -u +'%Y-%m-%d'))" || echo "No changes to commit"
+          git add src/features/risk_predictions.geojson src/features/metadata.json src/models/model.pkl
+          git commit -m "Auto-update: model retrain & predictions ($(date -u +'%Y-%m-%d'))" || echo "No changes to commit"
           git push
