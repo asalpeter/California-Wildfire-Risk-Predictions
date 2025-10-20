@@ -1,4 +1,3 @@
-# src/data/make_features.py
 import faulthandler
 import glob
 import re
@@ -150,7 +149,6 @@ n_lon = None
 
 def build_index_map_from(ds_like):
     global lat_idx, lon_idx, n_lon
-    # pick lat/lon names from this dataset
     lat_name = "lat" if "lat" in ds_like.coords else "latitude"
     lon_name = "lon" if "lon" in ds_like.coords else "longitude"
     lat_vals = ds_like[lat_name].values
@@ -173,7 +171,6 @@ if idx_map_path.exists():
     lon_idx = hex_centroids["ilon"].to_numpy()
     log("Loaded cached grid index map.")
 else:
-    # open one small file to infer coords
     probe = open_one(m_t[years[0]])
     build_index_map_from(probe)
 
@@ -196,37 +193,32 @@ def sample_year(y: int) -> Path:
     ds_p = open_one(m_p[y])
     da_p = pick_var(ds_p, ["pr", "precipitation_amount", "precip", "precipitation"])
 
-    # standardize units
     temp = to_celsius(da_t)  # °C
-    rh = da_r  # %
-    wind = da_v  # m/s
-    precip = da_p  # mm/day
+    rh = da_r                # %
+    wind = da_v              # m/s
+    precip = da_p            # mm/day
 
-    # build small daily dataset for this year
     daily = xr.Dataset({"temp": temp, "rh": rh, "wind": wind, "precip": precip})
 
-    # stack lazily, but only for this one year
     lat_name = "lat" if "lat" in daily.coords else "latitude"
     lon_name = "lon" if "lon" in daily.coords else "longitude"
     daily_flat = daily.stack(cell=(lat_name, lon_name))
     flat_idx = (lat_idx * daily.sizes[lon_name] + lon_idx).astype(int)
     sub = daily_flat.isel(cell=xr.DataArray(flat_idx, dims="point")).transpose("time", "point")
 
-    # to pandas
     df = sub.to_dataframe().reset_index()
     df = df.rename(columns={"time": "date"})
     df["hex_id"] = hex_centroids["hex_id"].to_numpy()[df["point"].to_numpy()]
     feat_y = df.drop(columns=["point"]).copy()
     feat_y["date"] = pd.to_datetime(feat_y["date"]).dt.normalize()
 
-    # VPD on rows
+    # VPD
     es = 6.112 * np.exp((17.67 * feat_y["temp"].to_numpy()) / (feat_y["temp"].to_numpy() + 243.5))
     ea = es * (feat_y["rh"].to_numpy() / 100.0)
     feat_y["vpd"] = np.maximum(es - ea, 0.0)
 
     feat_y.to_parquet(fp_out, index=False)
     log(f"[{y}] Wrote -> {fp_out}")
-    # close datasets to free handles
     for ds in (ds_t, ds_r, ds_v, ds_p):
         ds.close()
     return fp_out
@@ -240,6 +232,14 @@ log("Concatenating yearly parts…")
 feat = pd.concat([pd.read_parquet(p) for p in sorted(part_paths)], ignore_index=True)
 feat = feat.sort_values(["hex_id", "date"]).reset_index(drop=True)
 log(f"All rows: {len(feat):,}")
+
+# -------- memory downcast early to avoid OOM --------
+feat["hex_id"] = feat["hex_id"].astype(np.int32)
+num_cols = feat.select_dtypes(include=["float", "int", "bool"]).columns.tolist()
+if num_cols:
+    feat[num_cols] = feat[num_cols].apply(pd.to_numeric, downcast="float")
+    feat[num_cols] = feat[num_cols].apply(pd.to_numeric, downcast="integer")
+log(f"Memory after downcast ~{feat.memory_usage(deep=True).sum()/1e9:.2f} GB")
 
 # ----------------- engineer features ----------------
 log("Adding rolling weather features…")
@@ -263,46 +263,47 @@ feat["precip_sum_30d"] = g["precip"].apply(lambda s: s.rolling(30, min_periods=1
 med30 = feat.groupby("hex_id")["precip_sum_30d"].transform("median")
 feat["precip_30d_deficit"] = (med30 - feat["precip_sum_30d"]).clip(lower=0)
 
-# Lagged FIRMS
+# --------- Lagged FIRMS (memory-safe join) ----------
 counts_path = PROC / "firms_counts.parquet"
 if counts_path.exists():
-    log("Merging lagged FIRMS features…")
-    counts = pd.read_parquet(counts_path)
+    log("Merging lagged FIRMS features (memory-safe)…")
+    counts = pd.read_parquet(counts_path, columns=["hex_id", "date", "fires"])
+    counts["hex_id"] = counts["hex_id"].astype(np.int32)
     counts["date"] = pd.to_datetime(counts["date"]).dt.normalize()
+
     counts = counts.sort_values(["hex_id", "date"]).reset_index(drop=True)
     gg = counts.groupby("hex_id", group_keys=False)
-    counts["fires_lag1"] = gg["fires"].shift(1).fillna(0)
-    counts["fires_last3"] = (
-        gg["fires_lag1"].rolling(3, min_periods=1).sum().reset_index(level=0, drop=True)
-    )
-    counts["fires_last7"] = (
-        gg["fires_lag1"].rolling(7, min_periods=1).sum().reset_index(level=0, drop=True)
-    )
-    counts = counts[["hex_id", "date", "fires_last3", "fires_last7"]]
-    feat = feat.merge(counts, on=["hex_id", "date"], how="left").fillna(
-        {"fires_last3": 0, "fires_last7": 0}
-    )
+    counts["fires_lag1"]  = gg["fires"].shift(1).fillna(0)
+    counts["fires_last3"] = gg["fires_lag1"].rolling(3, min_periods=1).sum().reset_index(level=0, drop=True)
+    counts["fires_last7"] = gg["fires_lag1"].rolling(7, min_periods=1).sum().reset_index(level=0, drop=True)
+
+    counts = counts[["hex_id", "date", "fires_last3", "fires_last7"]].copy()
+    counts["fires_last3"] = pd.to_numeric(counts["fires_last3"], downcast="integer").astype(np.int16)
+    counts["fires_last7"] = pd.to_numeric(counts["fires_last7"], downcast="integer").astype(np.int16)
+
+    # MultiIndex alignment -> assign columns without creating a huge merged copy
+    feat_indexed = feat.set_index(["hex_id", "date"], drop=False)
+    counts_indexed = counts.set_index(["hex_id", "date"])
+    feat["fires_last3"] = counts_indexed["fires_last3"].reindex(feat_indexed.index).to_numpy()
+    feat["fires_last7"] = counts_indexed["fires_last7"].reindex(feat_indexed.index).to_numpy()
+    feat[["fires_last3", "fires_last7"]] = feat[["fires_last3", "fires_last7"]].fillna(0)
+    feat["fires_last3"] = feat["fires_last3"].astype(np.int16)
+    feat["fires_last7"] = feat["fires_last7"].astype(np.int16)
+
+    del counts, counts_indexed, feat_indexed
 else:
     log("firms_counts.parquet not found; filling lagged fire features with 0.")
-    feat["fires_last3"] = 0.0
-    feat["fires_last7"] = 0.0
+    feat["fires_last3"] = np.int16(0)
+    feat["fires_last7"] = np.int16(0)
 
-# Static topography / human proxies (optional)
-topo_path = Path("src/features/hex_static_topo.parquet")
-human_path = Path("src/features/hex_static_human.parquet")
-if topo_path.exists():
-    topo = pd.read_parquet(topo_path)
-    feat = feat.merge(topo, on="hex_id", how="left")
-else:
-    log("Topography parquet not found; continuing without topo.")
-if human_path.exists():
-    hum = pd.read_parquet(human_path)
-    feat = feat.merge(hum, on="hex_id", how="left")
-else:
-    log("Human proxies parquet not found; continuing without human features.")
+# -------- final tighten before write & save ----------
+num_cols = feat.select_dtypes(include=["float", "int", "bool"]).columns.tolist()
+if num_cols:
+    feat[num_cols] = feat[num_cols].apply(pd.to_numeric, downcast="float")
+    feat[num_cols] = feat[num_cols].apply(pd.to_numeric, downcast="integer")
+log(f"Memory before write ~{feat.memory_usage(deep=True).sum()/1e9:.2f} GB")
 
-# ----------------- save -----------------------------
 out_path = PROC / "features.parquet"
 log(f"Writing {out_path} with {len(feat):,} rows and {feat.shape[1]} columns…")
-feat.to_parquet(out_path, index=False)
+feat.to_parquet(out_path, index=False)  # pyarrow available
 log("Done.")
