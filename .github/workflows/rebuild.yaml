@@ -60,11 +60,18 @@ jobs:
           fi
 
       - name: Compute dynamic dates (END=today UTC, START=END-4y)
+        shell: bash
         run: |
-          END=$(date -u +%F)
+          set -euo pipefail
+          END=$(date -u +%F)                          # or: date -u -d 'yesterday' +%F
           START=$(date -u -d "$END -4 years" +%F)
-          echo "END=$END"     >> $GITHUB_ENV
-          echo "START=$START" >> $GITHUB_ENV
+          echo "END=$END"     >> "$GITHUB_ENV"
+          echo "START=$START" >> "$GITHUB_ENV"
+
+      - name: Verify dates (debug)
+        run: |
+          echo "START=$START"
+          echo "END=$END"
 
       # ---------- REFRESH RAW DATA (idempotent; skips existing) ----------
       - name: Download latest FIRMS detections
@@ -75,8 +82,6 @@ jobs:
           python -u src/data/download_firms.py
 
       - name: Download/ensure GridMET year files (END=today)
-        env:
-          END: ${{ steps.dates.outputs.END_DATE }}
         run: |
           source .venv/bin/activate
           python -u src/data/download_gridmet.py
