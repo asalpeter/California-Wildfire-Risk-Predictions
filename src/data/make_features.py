@@ -1,3 +1,4 @@
+import os
 import faulthandler
 import glob
 import re
@@ -25,6 +26,12 @@ PROC = Path("data/processed")
 PARTS = PROC / "features_parts"
 for p in (PROC, PARTS):
     p.mkdir(parents=True, exist_ok=True)
+
+# --- dynamic window from env, falling back to config ---
+start_str = os.getenv("START", CFG["history"]["start"])
+end_str = os.getenv("END", CFG["history"]["end"])
+start_year = pd.to_datetime(start_str).year
+end_year = pd.to_datetime(end_str).year
 
 # ----------------- hex centroids --------------------
 log("Loading hex grid…")
@@ -133,12 +140,11 @@ m_r = map_by_year(rmin_files)
 m_v = map_by_year(vs_files)
 m_p = map_by_year(pr_files)
 
-start = pd.to_datetime(CFG["history"]["start"]).year
-end = pd.to_datetime(CFG["history"]["end"]).year
+# Years constrained by ENV window (falls back to config if not set)
 years = sorted(set(m_t) & set(m_r) & set(m_v) & set(m_p))
-years = [y for y in years if start <= y <= end]
+years = [y for y in years if start_year <= y <= end_year]
 if not years:
-    raise RuntimeError("No overlapping yearly files in requested history window.")
+    raise RuntimeError("No overlapping yearly files in requested window.")
 log(f"Years to process: {years[0]}–{years[-1]} ({len(years)} years)")
 
 # ----------------- build index map once -------------
@@ -194,9 +200,9 @@ def sample_year(y: int) -> Path:
     da_p = pick_var(ds_p, ["pr", "precipitation_amount", "precip", "precipitation"])
 
     temp = to_celsius(da_t)  # °C
-    rh = da_r                # %
-    wind = da_v              # m/s
-    precip = da_p            # mm/day
+    rh = da_r  # %
+    wind = da_v  # m/s
+    precip = da_p  # mm/day
 
     daily = xr.Dataset({"temp": temp, "rh": rh, "wind": wind, "precip": precip})
 
@@ -231,7 +237,14 @@ part_paths = [sample_year(y) for y in years]
 log("Concatenating yearly parts…")
 feat = pd.concat([pd.read_parquet(p) for p in sorted(part_paths)], ignore_index=True)
 feat = feat.sort_values(["hex_id", "date"]).reset_index(drop=True)
-log(f"All rows: {len(feat):,}")
+log(f"All rows (pre-trim): {len(feat):,}")
+
+# Trim to the exact window [START, END] (not just whole years)
+start_dt = pd.to_datetime(start_str).normalize()
+end_dt = pd.to_datetime(end_str).normalize()
+feat = feat[(feat["date"] >= start_dt) & (feat["date"] <= end_dt)].copy()
+feat.reset_index(drop=True, inplace=True)
+log(f"Rows after date trim [{start_dt.date()}..{end_dt.date()}]: {len(feat):,}")
 
 # -------- memory downcast early to avoid OOM --------
 feat["hex_id"] = feat["hex_id"].astype(np.int32)
@@ -273,15 +286,19 @@ if counts_path.exists():
 
     counts = counts.sort_values(["hex_id", "date"]).reset_index(drop=True)
     gg = counts.groupby("hex_id", group_keys=False)
-    counts["fires_lag1"]  = gg["fires"].shift(1).fillna(0)
-    counts["fires_last3"] = gg["fires_lag1"].rolling(3, min_periods=1).sum().reset_index(level=0, drop=True)
-    counts["fires_last7"] = gg["fires_lag1"].rolling(7, min_periods=1).sum().reset_index(level=0, drop=True)
+    counts["fires_lag1"] = gg["fires"].shift(1).fillna(0)
+    counts["fires_last3"] = (
+        gg["fires_lag1"].rolling(3, min_periods=1).sum().reset_index(level=0, drop=True)
+    )
+    counts["fires_last7"] = (
+        gg["fires_lag1"].rolling(7, min_periods=1).sum().reset_index(level=0, drop=True)
+    )
 
     counts = counts[["hex_id", "date", "fires_last3", "fires_last7"]].copy()
     counts["fires_last3"] = pd.to_numeric(counts["fires_last3"], downcast="integer").astype(np.int16)
     counts["fires_last7"] = pd.to_numeric(counts["fires_last7"], downcast="integer").astype(np.int16)
 
-    # MultiIndex alignment -> assign columns without creating a huge merged copy
+    # MultiIndex alignment -> assign columns without a huge merged copy
     feat_indexed = feat.set_index(["hex_id", "date"], drop=False)
     counts_indexed = counts.set_index(["hex_id", "date"])
     feat["fires_last3"] = counts_indexed["fires_last3"].reindex(feat_indexed.index).to_numpy()
