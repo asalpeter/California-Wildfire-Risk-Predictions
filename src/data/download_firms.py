@@ -25,8 +25,10 @@ SOURCES = ["VIIRS_SNPP_SP"]  # optionally add: "VIIRS_NOAA20_SP", "VIIRS_NOAA21_
 minx, miny, maxx, maxy = -124.6, 32.4, -114.0, 42.1
 AREA = f"{minx},{miny},{maxx},{maxy}"
 
-start = datetime.fromisoformat(CFG["history"]["start"])
-end = datetime.fromisoformat(CFG["history"]["end"])
+start_str = os.getenv("START", CFG["history"]["start"])
+end_str = os.getenv("END", CFG["history"]["end"])
+start = datetime.fromisoformat(start_str)
+end = datetime.fromisoformat(end_str)
 
 DAY_RANGE = 10  # max allowed by FIRMS
 
