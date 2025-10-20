@@ -6,7 +6,7 @@ on:
     - cron: "0 10 * * *"     # daily at 10:00 UTC (~3am PT)
 
 permissions:
-  contents: write            # allow push from the bot
+  contents: write
 
 concurrency:
   group: rebuild
@@ -16,6 +16,8 @@ jobs:
   rebuild:
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    env:
+      PYTHONUNBUFFERED: "1"  # stream Python prints immediately
 
     steps:
       - name: Checkout
@@ -27,15 +29,18 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Cache big data folders (GridMET & DEM tiles)
+      - name: Cache big data folders (GridMET, DEM, FIRMS, feature parts)
         uses: actions/cache@v4
         with:
           path: |
             data/raw/gridmet
             data/raw/dem/tiles
-          key: gridmet-dem-${{ runner.os }}-${{ hashFiles('src/config.yaml') }}
+            data/raw/firms
+            data/processed/features_parts
+            src/features/grid_index_map.parquet
+          key: data-cache-${{ runner.os }}-${{ hashFiles('src/config.yaml') }}
           restore-keys: |
-            gridmet-dem-${{ runner.os }}-
+            data-cache-${{ runner.os }}-
 
       - name: Create venv & install pipeline deps
         run: |
@@ -53,49 +58,47 @@ jobs:
             echo "FIRMS_MAP_KEY is missing in repo secrets (Settings → Secrets and variables → Actions)." >&2
             exit 1
           fi
-          # optional: make .env for scripts that read it
-          echo "FIRMS_MAP_KEY=$FIRMS_MAP_KEY" > .env
 
       - name: Compute dynamic dates (END=today UTC)
         id: dates
         run: echo "END_DATE=$(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
-      # ---------- REFRESH RAW DATA (idempotent) ----------
+      # ---------- REFRESH RAW DATA (idempotent; skips existing) ----------
       - name: Download latest FIRMS detections
         env:
           FIRMS_MAP_KEY: ${{ secrets.FIRMS_MAP_KEY }}
         run: |
           source .venv/bin/activate
-          python src/data/download_firms.py
+          python -u src/data/download_firms.py
 
       - name: Download/ensure GridMET year files (END=today)
         env:
           END: ${{ steps.dates.outputs.END_DATE }}
         run: |
           source .venv/bin/activate
-          python src/data/download_gridmet.py
+          python -u src/data/download_gridmet.py
 
       # ---------- BUILD LABELS & FEATURES ----------
       - name: Build labels (hex × day)
         run: |
           source .venv/bin/activate
-          python src/data/make_labels.py
+          python -u src/data/make_labels.py
 
       - name: Build features (weather + VPD + statics + lags)
         run: |
           source .venv/bin/activate
-          python src/data/make_features.py
+          python -u src/data/make_features.py
 
       # ---------- TRAIN & PREDICT ----------
       - name: Train model
         run: |
           source .venv/bin/activate
-          python src/data/train.py
+          python -u src/data/train.py
 
       - name: Predict & export GeoJSON
         run: |
           source .venv/bin/activate
-          python src/data/predict.py
+          python -u src/data/predict.py
 
       # ---------- COMMIT ONLY SMALL ARTIFACTS ----------
       - name: Commit and push updated artifacts
@@ -103,5 +106,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add src/features/risk_predictions.geojson src/features/metadata.json src/models/model.pkl
-          git commit -m "Auto-update: model retrain & predictions ($(date -u +'%Y-%m-%d'))" || echo "No changes to commit"
+          git commit -m "🔄 Auto-update: model retrain & predictions ($(date -u +'%Y-%m-%d'))" || echo "No changes to commit"
           git push
