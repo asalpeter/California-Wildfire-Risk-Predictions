@@ -1,3 +1,4 @@
+import os
 import glob
 from pathlib import Path
 
@@ -11,6 +12,11 @@ HEX = Path("src/features/hexgrid_ca.geojson")
 RAW_FIRMS = Path("data/raw/firms")
 PROC = Path("data/processed")
 PROC.mkdir(parents=True, exist_ok=True)
+
+start_str = os.getenv("START", CFG["history"]["start"])
+end_str = os.getenv("END", CFG["history"]["end"])
+start_dt = pd.to_datetime(start_str).normalize()
+end_dt = pd.to_datetime(end_str).normalize()
 
 # Load hex grid (WGS84)
 hexes = gpd.read_file(HEX).to_crs("EPSG:4326")
@@ -56,7 +62,7 @@ joined = gpd.sjoin(
 daily = joined.groupby(["hex_id", "date"]).size().rename("fires").reset_index()
 
 # Build full hex × date grid over history window
-all_dates = pd.date_range(CFG["history"]["start"], CFG["history"]["end"], freq="D").normalize()
+all_dates = pd.date_range(start_dt, end_dt, freq="D").normalize()
 grid = pd.MultiIndex.from_product([hex_ids, all_dates], names=["hex_id", "date"]).to_frame(
     index=False
 )
