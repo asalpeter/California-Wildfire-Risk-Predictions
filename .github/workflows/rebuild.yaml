@@ -59,9 +59,12 @@ jobs:
             exit 1
           fi
 
-      - name: Compute dynamic dates (END=today UTC)
-        id: dates
-        run: echo "END_DATE=$(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+      - name: Compute dynamic dates (END=today UTC, START=END-4y)
+        run: |
+          END=$(date -u +%F)
+          START=$(date -u -d "$END -4 years" +%F)
+          echo "END=$END"     >> $GITHUB_ENV
+          echo "START=$START" >> $GITHUB_ENV
 
       # ---------- REFRESH RAW DATA (idempotent; skips existing) ----------
       - name: Download latest FIRMS detections
