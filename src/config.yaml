@@ -11,5 +11,4 @@ static:
 
 human:
   osm_highway_filter: '["highway"~"motorway|trunk|primary|secondary|tertiary|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link"]'
-  # max edges to fetch per polygon pull; osmnx will tile internally
   network_type: "drive"
