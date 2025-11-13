@@ -7,11 +7,10 @@ import pandas as pd
 import yaml
 from sklearn.metrics import average_precision_score, roc_auc_score
 
-# ---- Try XGBoost; fall back to GBDT if needed
 USE_XGB = True
 try:
-    from xgboost import XGBClassifier  # type: ignore
-    from xgboost.callback import EarlyStopping  # callback API works across versions
+    from xgboost import XGBClassifier
+    from xgboost.callback import EarlyStopping
 except Exception as e:
     print(
         "XGBoost unavailable; falling back to GradientBoostingClassifier. Reason:",
@@ -27,20 +26,17 @@ PROC = Path("data/processed")
 ART = Path("src/models")
 ART.mkdir(parents=True, exist_ok=True)
 
-# --------------------- load data ---------------------
 feat = pd.read_parquet(PROC / "features.parquet")
 lab = pd.read_parquet(PROC / "labels.parquet")
 
 df = feat.merge(lab, on=["hex_id", "date"], how="inner").sort_values(["date", "hex_id"])
 df["date"] = pd.to_datetime(df["date"]).dt.normalize()
 
-# ----------------- recent window filter --------------
 recent_years = int(CFG.get("train", {}).get("recent_years", 4))
 max_day = df["date"].max()
 cutoff = max_day - pd.Timedelta(days=int(365.25 * recent_years))
 df_recent = df[df["date"] >= cutoff].copy()
 
-# --------------------- split by day ------------------
 dates = df_recent["date"].drop_duplicates().sort_values().to_list()
 split_idx = max(1, int(round(len(dates) * 0.8)))
 train_days = set(dates[:split_idx])
@@ -55,12 +51,10 @@ print(
 )
 print("Base rates  train={:.4f}  valid={:.4f}".format(train["y"].mean(), valid["y"].mean()))
 
-# -------------------- build matrices -----------------
 feat_cols = [c for c in df_recent.columns if c not in ["hex_id", "date", "y"]]
 Xtr, ytr = train[feat_cols].copy(), train["y"].astype(int)
 Xva, yva = valid[feat_cols].copy(), valid["y"].astype(int)
 
-# Drop any non-numeric artifacts
 for junk in ["cell", "point"]:
     if junk in Xtr.columns:
         print(f"Dropping stray column: {junk}")
@@ -73,7 +67,6 @@ if drop_cols:
 Xtr = Xtr[num_cols]
 Xva = Xva[num_cols]
 
-# ---------------------- model ------------------------
 if USE_XGB:
     pos = ytr.sum()
     neg = len(ytr) - pos
@@ -94,9 +87,7 @@ if USE_XGB:
         random_state=42,
     )
 
-    # ---- Fit with best-available early stopping API; otherwise plain fit
     fitted = False
-    # 1) Newer API
     try:
         model.fit(
             Xtr,
@@ -108,7 +99,6 @@ if USE_XGB:
         fitted = True
     except TypeError:
         pass
-    # 2) Callback API (some mid versions)
     if not fitted:
         try:
             from xgboost.callback import EarlyStopping
@@ -125,7 +115,6 @@ if USE_XGB:
             fitted = True
         except Exception:
             pass
-    # 3) Fallback: no early stopping
     if not fitted:
         model.fit(Xtr, ytr)
 else:
@@ -136,7 +125,6 @@ else:
     )
     model.fit(Xtr, ytr)
 
-# ------------------- validation metrics --------------
 if hasattr(model, "predict_proba"):
     pva = model.predict_proba(Xva)[:, 1]
 else:
@@ -147,7 +135,6 @@ auc = roc_auc_score(yva, pva) if yva.nunique() == 2 else float("nan")
 prauc = average_precision_score(yva, pva) if yva.nunique() == 2 else float("nan")
 print(f"Val ROC-AUC: {auc:.3f}  PR-AUC: {prauc:.3f}")
 
-# ---------------- margin→score scaler (0–1) ----------
 if USE_XGB:
     train_margin = model.predict(Xtr, output_margin=True)
     valid_margin = model.predict(Xva, output_margin=True)
@@ -169,7 +156,6 @@ print(
     )
 )
 
-# ---------------------- persist ----------------------
 bundle = {
     "model": model,
     "features": num_cols,
