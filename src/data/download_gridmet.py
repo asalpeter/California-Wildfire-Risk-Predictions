@@ -12,18 +12,15 @@ end_str = os.getenv("END", CFG["history"]["end"])
 START = datetime.fromisoformat(start_str)
 END = datetime.fromisoformat(end_str)
 
-# GridMET daily variables:
-# tmmx: max temp (K), rmin: min RH (%), vs: wind (m/s), pr: precip (mm/day)
 VARS = ["tmmx", "rmin", "vs", "pr"]
 
 OUTDIR = Path("data/raw/gridmet")
 OUTDIR.mkdir(parents=True, exist_ok=True)
 
-BASE = "https://www.northwestknowledge.net/metdata/data"  # .nc per-year files
+BASE = "https://www.northwestknowledge.net/metdata/data"
 
 
 def url_for(var: str, year: int) -> str:
-    # NOTE: extension is .nc (not .nc4)
     return f"{BASE}/{var}_{year}.nc"
 
 
