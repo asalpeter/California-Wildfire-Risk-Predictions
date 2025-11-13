@@ -12,7 +12,7 @@ import xarray as xr
 import yaml
 
 faulthandler.enable()
-faulthandler.dump_traceback_later(600)  # dump stack if we stall for 10 minutes
+faulthandler.dump_traceback_later(600)
 t0 = time.time()
 
 
@@ -27,13 +27,11 @@ PARTS = PROC / "features_parts"
 for p in (PROC, PARTS):
     p.mkdir(parents=True, exist_ok=True)
 
-# --- dynamic window from env, falling back to config ---
 start_str = os.getenv("START", CFG["history"]["start"])
 end_str = os.getenv("END", CFG["history"]["end"])
 start_year = pd.to_datetime(start_str).year
 end_year = pd.to_datetime(end_str).year
 
-# ----------------- hex centroids --------------------
 log("Loading hex grid…")
 hexes = gpd.read_file(HEX).to_crs("EPSG:3310")
 hex_centroids = hexes.copy()
@@ -42,7 +40,6 @@ hex_centroids = hex_centroids.to_crs("EPSG:4326")
 log(f"Hex count: {len(hex_centroids):,}")
 
 
-# ----------------- helpers -------------------------
 def add_rollups(feat: pd.DataFrame, windows=(1, 3, 7)) -> pd.DataFrame:
     feat = feat.sort_values(["hex_id", "date"]).copy()
     grp = feat.groupby("hex_id", group_keys=False)
@@ -109,7 +106,6 @@ def nearest_indices(sorted_vals, query_vals):
         return np.where(choose_left, left, right)
 
 
-# ----------------- gather files & years -------------
 tmmx_files = files_for("tmmx")
 rmin_files = files_for("rmin")
 vs_files = files_for("vs")
@@ -140,14 +136,12 @@ m_r = map_by_year(rmin_files)
 m_v = map_by_year(vs_files)
 m_p = map_by_year(pr_files)
 
-# Years constrained by ENV window (falls back to config if not set)
 years = sorted(set(m_t) & set(m_r) & set(m_v) & set(m_p))
 years = [y for y in years if start_year <= y <= end_year]
 if not years:
     raise RuntimeError("No overlapping yearly files in requested window.")
 log(f"Years to process: {years[0]}–{years[-1]} ({len(years)} years)")
 
-# ----------------- build index map once -------------
 idx_map_path = Path("src/features/grid_index_map.parquet")
 lat_idx = lon_idx = None
 n_lon = None
@@ -181,7 +175,6 @@ else:
     build_index_map_from(probe)
 
 
-# ----------------- per-year sampling ----------------
 def sample_year(y: int) -> Path:
     """Open one year per variable, sample to hexes, compute VPD, write a year parquet, return path."""
     fp_out = PARTS / f"features_{y}.parquet"
@@ -233,20 +226,17 @@ def sample_year(y: int) -> Path:
 log("Sampling per year and writing parts…")
 part_paths = [sample_year(y) for y in years]
 
-# ----------------- concat all parts -----------------
 log("Concatenating yearly parts…")
 feat = pd.concat([pd.read_parquet(p) for p in sorted(part_paths)], ignore_index=True)
 feat = feat.sort_values(["hex_id", "date"]).reset_index(drop=True)
 log(f"All rows (pre-trim): {len(feat):,}")
 
-# Trim to the exact window [START, END] (not just whole years)
 start_dt = pd.to_datetime(start_str).normalize()
 end_dt = pd.to_datetime(end_str).normalize()
 feat = feat[(feat["date"] >= start_dt) & (feat["date"] <= end_dt)].copy()
 feat.reset_index(drop=True, inplace=True)
 log(f"Rows after date trim [{start_dt.date()}..{end_dt.date()}]: {len(feat):,}")
 
-# -------- memory downcast early to avoid OOM --------
 feat["hex_id"] = feat["hex_id"].astype(np.int32)
 num_cols = feat.select_dtypes(include=["float", "int", "bool"]).columns.tolist()
 if num_cols:
@@ -254,7 +244,6 @@ if num_cols:
     feat[num_cols] = feat[num_cols].apply(pd.to_numeric, downcast="integer")
 log(f"Memory after downcast ~{feat.memory_usage(deep=True).sum()/1e9:.2f} GB")
 
-# ----------------- engineer features ----------------
 log("Adding rolling weather features…")
 feat = add_rollups(feat, windows=tuple(CFG["features"].get("agg_windows_days", [1, 3, 7])))
 
@@ -276,7 +265,6 @@ feat["precip_sum_30d"] = g["precip"].apply(lambda s: s.rolling(30, min_periods=1
 med30 = feat.groupby("hex_id")["precip_sum_30d"].transform("median")
 feat["precip_30d_deficit"] = (med30 - feat["precip_sum_30d"]).clip(lower=0)
 
-# --------- Lagged FIRMS (memory-safe join) ----------
 counts_path = PROC / "firms_counts.parquet"
 if counts_path.exists():
     log("Merging lagged FIRMS features (memory-safe)…")
@@ -298,7 +286,6 @@ if counts_path.exists():
     counts["fires_last3"] = pd.to_numeric(counts["fires_last3"], downcast="integer").astype(np.int16)
     counts["fires_last7"] = pd.to_numeric(counts["fires_last7"], downcast="integer").astype(np.int16)
 
-    # MultiIndex alignment -> assign columns without a huge merged copy
     feat_indexed = feat.set_index(["hex_id", "date"], drop=False)
     counts_indexed = counts.set_index(["hex_id", "date"])
     feat["fires_last3"] = counts_indexed["fires_last3"].reindex(feat_indexed.index).to_numpy()
@@ -313,7 +300,6 @@ else:
     feat["fires_last3"] = np.int16(0)
     feat["fires_last7"] = np.int16(0)
 
-# -------- final tighten before write & save ----------
 num_cols = feat.select_dtypes(include=["float", "int", "bool"]).columns.tolist()
 if num_cols:
     feat[num_cols] = feat[num_cols].apply(pd.to_numeric, downcast="float")
