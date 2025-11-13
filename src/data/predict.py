@@ -1,4 +1,3 @@
-# src/data/predict.py
 import json
 from pathlib import Path
 
@@ -20,21 +19,17 @@ q_lo = bundle["scaler"]["q_lo"]
 q_hi = bundle["scaler"]["q_hi"]
 use_xgb = bundle.get("use_xgb", True)
 
-# Use the last date in features as "today's" score (or swap in your desired date)
 feat = pd.read_parquet(PROC / "features.parquet")
 last_date = feat["date"].max()
 X = feat[feat["date"] == last_date].copy()
 
-# keep only trained columns
 X = X[feat_cols + ["hex_id"]]
 
-# raw margins
 if use_xgb:
     margin = model.predict(X[feat_cols], output_margin=True)
 else:
     margin = model.decision_function(X[feat_cols])
 
-# map margin -> [0,1] score (not a probability)
 risk = np.clip((margin - q_lo) / max(1e-9, (q_hi - q_lo)), 0.0, 1.0)
 
 df = pd.DataFrame({"hex_id": X["hex_id"].values, "risk": risk, "date": last_date})
