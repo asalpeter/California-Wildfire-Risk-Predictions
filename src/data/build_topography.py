@@ -19,7 +19,6 @@ OUT.parent.mkdir(parents=True, exist_ok=True)
 AWS_SKADI = "https://s3.amazonaws.com/elevation-tiles-prod/skadi"
 
 
-# ---------- small utilities ----------
 def log(msg: str):
     print(f"[topo] {msg}", flush=True)
 
@@ -81,7 +80,6 @@ def horn_slope_aspect(z3x3: np.ndarray, lat_deg: float) -> Tuple[float, float]:
     slope_rad = np.arctan(np.hypot(dzdx, dzdy))
     slope_deg = float(np.degrees(slope_rad))
 
-    # Aspect: 0=N, 90=E, 180=S, 270=W → 0..360
     aspect_rad = np.arctan2(dzdy, -dzdx)
     aspect_deg = float(np.degrees(aspect_rad))
     if aspect_deg < 0:
@@ -90,36 +88,30 @@ def horn_slope_aspect(z3x3: np.ndarray, lat_deg: float) -> Tuple[float, float]:
     return slope_deg, aspect_deg
 
 
-# ---------- load hex centroids (POINTS) ----------
 if not HEX_PATH.exists():
     raise FileNotFoundError(f"Missing hex grid: {HEX_PATH}")
 
 log("Loading hex grid …")
 hexes = gpd.read_file(HEX_PATH)
 
-# Compute accurate centroids in a projected CRS, then return to WGS84
 hexes_proj = hexes.to_crs("EPSG:3310")
 hex_centroids_proj = hexes_proj.geometry.buffer(0).centroid  # buffer(0) to fix any slivers
 cent = gpd.GeoDataFrame(
     hexes[["hex_id"]].copy(), geometry=hex_centroids_proj, crs="EPSG:3310"
 ).to_crs("EPSG:4326")
 
-# Now geometry is POINT → safe to read .x/.y
 cent["lon"] = cent.geometry.x
 cent["lat"] = cent.geometry.y
 
-# Group hex centroids by tile (download & open each tile once)
 cent["tile"] = [
     tile_name(lat, lon) for lat, lon in zip(cent["lat"].to_numpy(), cent["lon"].to_numpy())
 ]
 tiles = cent["tile"].unique().tolist()
 log(f"Unique tiles needed: {len(tiles)}")
 
-# Ensure tiles exist
 for t in tiles:
     ensure_tile_local(t)
 
-# Process tiles
 results: List[Dict] = []
 for t in tiles:
     hgt = ensure_tile_local(t)
@@ -127,7 +119,7 @@ for t in tiles:
         sub = cent[cent["tile"] == t].copy()
         rows, cols = src.index(sub["lon"].to_numpy(), sub["lat"].to_numpy())
 
-        band1 = src.read(1)  # 3601x3601
+        band1 = src.read(1)
         height, width = band1.shape
 
         for hex_id, lat, lon, r, c in zip(
