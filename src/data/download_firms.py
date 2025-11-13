@@ -18,10 +18,8 @@ MAP_KEY = os.getenv("FIRMS_MAP_KEY")
 if not MAP_KEY:
     raise RuntimeError("Set FIRMS_MAP_KEY in GitHub Secrets or env")
 
-# --- Sources: use SP for historical ---
-SOURCES = ["VIIRS_SNPP_SP"]  # optionally add: "VIIRS_NOAA20_SP", "VIIRS_NOAA21_SP"
+SOURCES = ["VIIRS_SNPP_SP"]
 
-# California bbox (W, S, E, N) — slightly padded
 minx, miny, maxx, maxy = -124.6, 32.4, -114.0, 42.1
 AREA = f"{minx},{miny},{maxx},{maxy}"
 
@@ -30,16 +28,15 @@ end_str = os.getenv("END", CFG["history"]["end"])
 start = datetime.fromisoformat(start_str)
 end = datetime.fromisoformat(end_str)
 
-DAY_RANGE = 10  # max allowed by FIRMS
+DAY_RANGE = 10
 
-# --- Robust HTTP session with retries ---
 def make_session() -> requests.Session:
     sess = requests.Session()
     retry = Retry(
         total=6,
         connect=6,
         read=6,
-        backoff_factor=1.5,  # 0s, 1.5s, 3s, 4.5s, 6s, 7.5s ...
+        backoff_factor=1.5,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET"],
         raise_on_status=False,
@@ -56,7 +53,6 @@ def fetch_window(src: str, d: datetime) -> pd.DataFrame:
     day = d.strftime("%Y-%m-%d")
     url = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{MAP_KEY}/{src}/{AREA}/{DAY_RANGE}/{day}"
     try:
-        # Longer timeout because files can be chunky
         r = SESSION.get(url, timeout=180)
         if r.status_code != 200 or not r.text.strip():
             print(f"Warn: HTTP {r.status_code} or empty body for {url}", flush=True)
@@ -79,7 +75,6 @@ while d <= end:
     window_end = min(d + timedelta(days=DAY_RANGE - 1), end)
     out = window_path(d, window_end)
 
-    # Skip if cached
     if out.exists() and out.stat().st_size > 0:
         print(f"Skip (exists): {out.name}", flush=True)
         d += timedelta(days=DAY_RANGE)
@@ -100,7 +95,6 @@ while d <= end:
     else:
         print(f"No data for window {d:%Y-%m-%d}..{window_end:%Y-%m-%d}", flush=True)
 
-    # Be gentle to the API
     time.sleep(0.8)
     d += timedelta(days=DAY_RANGE)
 
