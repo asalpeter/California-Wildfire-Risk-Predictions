@@ -18,11 +18,9 @@ end_str = os.getenv("END", CFG["history"]["end"])
 start_dt = pd.to_datetime(start_str).normalize()
 end_dt = pd.to_datetime(end_str).normalize()
 
-# Load hex grid (WGS84)
 hexes = gpd.read_file(HEX).to_crs("EPSG:4326")
 hex_ids = hexes["hex_id"].tolist()
 
-# Load FIRMS CSVs
 files = sorted(glob.glob(str(RAW_FIRMS / "*.csv")))
 if not files:
     raise FileNotFoundError(
@@ -50,7 +48,6 @@ gfirms = gpd.GeoDataFrame(
     firms, geometry=gpd.points_from_xy(firms["longitude"], firms["latitude"]), crs="EPSG:4326"
 )
 
-# Spatial join detections → hex_id
 joined = gpd.sjoin(
     gfirms,
     hexes[["hex_id", "geometry"]],
@@ -58,23 +55,18 @@ joined = gpd.sjoin(
     predicate="within",
 )
 
-# Aggregate to hex-day detection counts
 daily = joined.groupby(["hex_id", "date"]).size().rename("fires").reset_index()
 
-# Build full hex × date grid over history window
 all_dates = pd.date_range(start_dt, end_dt, freq="D").normalize()
 grid = pd.MultiIndex.from_product([hex_ids, all_dates], names=["hex_id", "date"]).to_frame(
     index=False
 )
 
-# Merge counts, fill 0
 counts = grid.merge(daily, on=["hex_id", "date"], how="left").fillna({"fires": 0})
 counts["fires"] = counts["fires"].astype(int)
 
-# Binary label: same-day any detection (keep current behavior)
 labels = counts.assign(y=(counts["fires"] > 0).astype(int))[["hex_id", "date", "y"]]
 
-# Save both
 counts.to_parquet(PROC / "firms_counts.parquet", index=False)
 labels.to_parquet(PROC / "labels.parquet", index=False)
 print("Wrote", PROC / "firms_counts.parquet", "and", PROC / "labels.parquet")
