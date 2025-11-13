@@ -10,7 +10,6 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from streamlit_folium import st_folium
 
-# --- Paths & setup ---
 root = Path(__file__).resolve().parents[2]
 default_geo_path = root / "src" / "features" / "risk_predictions.geojson"
 default_meta_path = root / "src" / "features" / "metadata.json"
@@ -20,10 +19,8 @@ GEOJSON_URL = os.environ.get("GEOJSON_URL", "").strip()
 st.set_page_config(page_title="California Wildfire Risk", layout="wide")
 st.title("🔥 California Wildfire Risk Map")
 
-# Auto-refresh every 5 minutes
 st_autorefresh(interval=5 * 60 * 1000, key="wf_auto")
 
-# Metadata
 meta = None
 if default_meta_path.exists():
     try:
@@ -35,7 +32,6 @@ if meta:
         f"Last updated: {meta.get('last_updated','?')} | Data date: {meta.get('date','?')}"
     )
 
-# Sidebar
 with st.sidebar:
     st.header("Map Controls")
     cmap_name = st.selectbox("Color scale", ["viridis", "plasma", "inferno"], index=0)
@@ -58,7 +54,6 @@ def load_geojson():
 
 gj = load_geojson()
 
-# Restrict to California
 US_STATES_URL = (
     "https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json"
 )
@@ -80,12 +75,10 @@ try:
 except Exception as e:
     st.warning(f"Could not fetch California boundary — showing all features. ({e})")
 
-# Apply risk filter
 gj["features"] = [
     f for f in gj["features"] if float(f["properties"].get("risk", 0.0)) >= thresh
 ]
 
-# If nothing passes the filter, show a friendly message and a blank map
 if not gj["features"]:
     st.warning(
         "No hexes match the current risk threshold. Try lowering the threshold in the sidebar."
@@ -105,7 +98,6 @@ if not gj["features"]:
     )
     st.stop()
 
-# ---- normal map path (at least 1 feature) ----
 m = folium.Map(
     location=[36.8, -120.0], zoom_start=5, control_scale=True, tiles="cartodbpositron"
 )
