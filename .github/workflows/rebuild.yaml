@@ -59,11 +59,12 @@ jobs:
             exit 1
           fi
 
-      - name: Compute dynamic dates (END=today UTC, START=END-4y)
+      - name: Compute dynamic dates (END=7 days ago to account for GridMET delay, START=END-4y)
         shell: bash
         run: |
           set -euo pipefail
-          END=$(date -u +%F)                          # or: date -u -d 'yesterday' +%F
+          # GridMET data has ~3-7 day delay; use 7 days ago to ensure data availability
+          END=$(date -u -d '7 days ago' +%F)
           START=$(date -u -d "$END -4 years" +%F)
           echo "END=$END"     >> "$GITHUB_ENV"
           echo "START=$START" >> "$GITHUB_ENV"
