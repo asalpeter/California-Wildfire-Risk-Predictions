@@ -40,12 +40,20 @@ def download_file(url: str, path: Path):
 for yr in range(START.year, END.year + 1):
     for var in VARS:
         out = OUTDIR / f"{var}_{yr}.nc"
-        if out.exists() and out.stat().st_size > 0:
+        # Always re-download current and previous year to get latest data
+        # (GridMET yearly files are updated continuously throughout the year)
+        current_year = datetime.now().year
+        force_download = yr >= (current_year - 1)
+
+        if not force_download and out.exists() and out.stat().st_size > 0:
             print("Skip (exists):", out.name)
             continue
         url = url_for(var, yr)
         try:
-            print("Downloading:", url)
+            if force_download and out.exists():
+                print("Force re-downloading (current/recent year):", url)
+            else:
+                print("Downloading:", url)
             download_file(url, out)
             print("Saved:", out)
         except Exception as e:
